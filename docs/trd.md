@@ -5,14 +5,14 @@
 
 ## Stack
 
-| Dimensão              | Valor                                                                                                                                                                                         |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linguagem principal    | Python 3.14.6                                                                                                                                                                                 |
-| Runtime/plataforma     | Processo Python único. Servidor embutido do Flask via`app.run` quando executado diretamente; Gunicorn declarado como dependência, sem comando de inicialização definido no repositório |
-| Framework principal    | Flask 3.0.0, com Jinja2 3.1.6 para renderização de páginas                                                                                                                                 |
-| Banco de dados         | PostgreSQL, acessado via SQLAlchemy 2.0.43 e driver psycopg2-binary 2.9.10                                                                                                                    |
-| Ferramentas de build   | Não aplicável — não há etapa de build, empacotamento ou bundling no repositório                                                                                                         |
-| Gerenciador de pacotes | pip, a partir de`src/requirements.txt` com 16 dependências de versão fixada. Não há lockfile nem `pyproject.toml`                                                                     |
+| Dimensão | Valor |
+| --- | --- |
+| Linguagem principal | Python 3.13, declarada e fixada pela imagem de container — a versão mais recente para a qual todas as 16 dependências pinadas publicam artefatos pré-compilados. Deixa de variar por máquina |
+| Runtime/plataforma | Container Docker como unidade de empacotamento e execução, em imagem única para desenvolvimento e produção. Servidor de aplicação Gunicorn 21.2.0 nos dois ambientes, com **um único processo de trabalho por container**. Desenvolvimento: Docker Compose, construindo e executando a mesma imagem ao lado do banco, condicionando a subida da aplicação à disponibilidade real da dependência. Produção: cluster Amazon EKS dedicado na AWS, três réplicas em três zonas de disponibilidade. A diferença entre ambientes existe apenas como configuração externa à imagem, nunca como imagem distinta |
+| Framework principal | Flask 3.0.0, com Jinja2 3.1.6 para renderização de páginas |
+| Banco de dados | PostgreSQL, acessado via SQLAlchemy 2.0.43 e driver psycopg2-binary 2.9.10. Produção: instância gerenciada Amazon RDS for PostgreSQL, classe `db.t4g.micro`, armazenamento gp3 de 20 GiB, com réplica síncrona de contingência em outra zona e failover automático. Desenvolvimento: container PostgreSQL orquestrado por Docker Compose |
+| Ferramentas de build | Build de imagem Docker em estágio único, sobre distribuição base de propósito geral, com contexto restrito a `src/`. Não há etapa de compilação — todas as dependências pinadas têm artefato pré-compilado na versão de interpretador escolhida. Publicação manual em repositório público no Docker Hub, arquitetura única (`linux/amd64`), com tag única derivada de `SERVICE_VERSION` e congelada na imagem no momento do build; não há tag móvel |
+| Gerenciador de pacotes | pip, a partir de `src/requirements.txt` com 16 dependências de versão fixada. Não há lockfile nem `pyproject.toml` |
 
 ## Arquitetura
 
@@ -20,104 +20,122 @@
 
 Camadas: `router → service → model`, com schemas Pydantic na fronteira de entrada e saída. Existem duas superfícies de entrada — uma API JSON e um conjunto de páginas HTML — implementadas como blueprints Flask distintos que consomem o mesmo módulo de serviço, de modo que a regra de negócio e o acesso ao banco existem em um único ponto.
 
+A preparação do schema do banco não acontece dentro do processo da aplicação: é etapa separada e anterior, executada a partir da mesma imagem, da qual a aplicação depende para subir. Em produção ela executa como Job do Kubernetes, concluído antes do rollout das réplicas, de modo que réplicas subindo em paralelo nunca concorrem pela mesma criação de estruturas.
+
+Em produção a aplicação executa como três réplicas idênticas e intercambiáveis, uma por zona de disponibilidade, garantidas por restrição de espalhamento topológico (`topologySpreadConstraints`, `maxSkew: 1`, `topologyKey: topology.kubernetes.io/zone`, `whenUnsatisfiable: DoNotSchedule`) e protegidas por orçamento de interrupção (`PodDisruptionBudget`, `minAvailable: 2`). A aplicação não mantém estado próprio entre requisições — toda informação persistente está no banco —, o que torna as réplicas substituíveis sem coordenação e viabiliza o uso de capacidade interruptível nos nós.
+
 ### Estrutura de pastas dominante
 
 ```
 docs/            # PRDs do projeto
+└── adrs/        # Decisões arquiteturais registradas
 prompts/         # Prompts usados para gerar a documentação
-src/             # Todo o código da aplicação
+src/             # Todo o código da aplicação — também o contexto de build da imagem
 ├── core/        # Configurações, conexão com o banco e logging
 ├── models/      # Entidade SQLAlchemy e declaração das tabelas
 ├── schemas/     # Modelos Pydantic de entrada e saída
 ├── services/    # Regra de negócio e operações sobre o banco
-├── routers/     # Blueprints Flask: API JSON e páginas HTML
+├── routers/     # Blueprints Flask: API JSON, páginas HTML e sinais de saúde
 ├── templates/   # Templates Jinja2
 ├── static/      # CSS e JavaScript servidos pela aplicação
 └── tests/       # Testes automatizados, espelhando a estrutura de src
 ```
 
-Na raiz: `pytest.ini`, `api-requests.http` e dois arquivos de exemplo de variáveis de ambiente (`.env.exemple` na raiz e `src/.env.example`). O ponto de entrada é `src/main.py`. Não há arquivos `__init__.py` em nenhum diretório.
+Na raiz: `pytest.ini`, `api-requests.http`, `docker-compose.yml` e dois arquivos de exemplo de variáveis de ambiente (`.env.exemple` na raiz e `src/.env.example`). O `Dockerfile` fica em `src/`, junto ao contexto de build — `pytest.ini` e `docs/` ficam, por isso, fora da imagem. O ponto de entrada da aplicação é `src/main.py`. Não há arquivos `__init__.py` em nenhum diretório.
 
 ### Módulos / camadas principais
 
-| Módulo                    | Responsabilidade                                                                                                                                                             |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `main`                   | Configura o logging, cria as tabelas no banco, instancia a aplicação Flask, registra métricas Prometheus, instala os middlewares de requisição e registra os blueprints |
-| `core.settings`          | Carrega variáveis de ambiente e expõe uma instância única de configuração                                                                                              |
-| `core.database`          | Cria o engine SQLAlchemy e fornece sessões de banco por meio de um gerenciador de contexto                                                                                  |
-| `core.logging`           | Configura o logger da aplicação e oferece funções auxiliares para registrar requisições, operações de banco e eventos de negócio                                    |
-| `models.event`           | Declara a base SQLAlchemy e a entidade`Event`                                                                                                                              |
-| `schemas.event`          | Define os modelos Pydantic de criação, atualização e saída de evento                                                                                                    |
-| `services.event_service` | Concentra criação, consulta e atualização de eventos, além da exceção`EventNotFoundError`                                                                           |
-| `routers.api_router`     | Blueprint da API JSON, registrado sob`/api/events`                                                                                                                         |
-| `routers.page_router`    | Blueprint das páginas HTML, registrado na raiz, incluindo o processamento dos formulários                                                                                  |
+| Módulo | Responsabilidade |
+| --- | --- |
+| `main` | Configura o logging, instancia a aplicação Flask, registra métricas Prometheus, instala os middlewares de requisição e registra os blueprints. **Não prepara o schema do banco** e não encerra o processo quando o banco está indisponível |
+| `schema_prep` | Rotina de preparação de schema, executada a partir da mesma imagem como etapa anterior e independente da aplicação. Cria estruturas ausentes; não altera estruturas existentes. Sinaliza resultado por código de saída |
+| `core.settings` | Carrega variáveis de ambiente e expõe uma instância única de configuração |
+| `core.database` | Cria o engine SQLAlchemy e fornece sessões de banco por meio de um gerenciador de contexto. O engine usa verificação prévia de conexão (`pool_pre_ping=True`) e reciclagem (`pool_recycle=300`) — condição para que o failover automático do RDS se traduza em recuperação da aplicação, e não em erro servido depois de a dependência já ter voltado |
+| `core.logging` | Configura o logger da aplicação e oferece funções auxiliares para registrar requisições, operações de banco e eventos de negócio |
+| `models.event` | Declara a base SQLAlchemy e a entidade `Event` |
+| `schemas.event` | Define os modelos Pydantic de criação, atualização e saída de evento |
+| `services.event_service` | Concentra criação, consulta e atualização de eventos, além da exceção `EventNotFoundError` |
+| `routers.api_router` | Blueprint da API JSON, registrado sob `/api/events` |
+| `routers.page_router` | Blueprint das páginas HTML, registrado na raiz, incluindo o processamento dos formulários |
+| `routers.health_router` | Blueprint dos sinais de vida e prontidão, registrado sem prefixo. Somente leitura, sem efeito colateral sobre dados ou estruturas |
 
 ### Rotas
 
 API — blueprint `api`, registrado com prefixo `/api/events`:
 
-| Método | Rota                                  | Handler                           |
-| ------- | ------------------------------------- | --------------------------------- |
-| POST    | `/api/events/`                      | `api_router.create_event`       |
-| GET     | `/api/events/`                      | `api_router.read_events`        |
-| GET     | `/api/events/by-token/<edit_token>` | `api_router.get_event_by_token` |
-| PUT     | `/api/events/by-token/<edit_token>` | `api_router.update_event`       |
+| Método | Rota | Handler |
+| --- | --- | --- |
+| POST | `/api/events/` | `api_router.create_event` |
+| GET | `/api/events/` | `api_router.read_events` |
+| GET | `/api/events/by-token/<edit_token>` | `api_router.get_event_by_token` |
+| PUT | `/api/events/by-token/<edit_token>` | `api_router.update_event` |
 
 Páginas — blueprint `pages`, registrado sem prefixo:
 
-| Método | Rota                          | Handler                           |
-| ------- | ----------------------------- | --------------------------------- |
-| GET     | `/`                         | `page_router.list_events_page`  |
-| GET     | `/events/new`               | `page_router.new_event_page`    |
-| GET     | `/events/<int:event_id>`    | `page_router.event_detail_page` |
-| GET     | `/events/edit/<edit_token>` | `page_router.edit_event_page`   |
-| POST    | `/events/`                  | `page_router.create_event_form` |
-| POST    | `/events/edit/<edit_token>` | `page_router.update_event_form` |
+| Método | Rota | Handler |
+| --- | --- | --- |
+| GET | `/` | `page_router.list_events_page` |
+| GET | `/events/new` | `page_router.new_event_page` |
+| GET | `/events/<int:event_id>` | `page_router.event_detail_page` |
+| GET | `/events/edit/<edit_token>` | `page_router.edit_event_page` |
+| POST | `/events/` | `page_router.create_event_form` |
+| POST | `/events/edit/<edit_token>` | `page_router.update_event_form` |
 
 A listagem em `GET /` e em `GET /api/events/` aceita o parâmetro `search`, aplicado como busca parcial e sem distinção de maiúsculas sobre título, descrição e local. A rota da API aceita ainda `skip` e `limit`, com padrões 0 e 100.
+
+Saúde e prontidão — blueprint `health`, registrado sem prefixo:
+
+| Método | Rota | Handler |
+| --- | --- | --- |
+| GET | `/health` | `health_router.health` |
+| GET | `/ready` | `health_router.ready` |
+
+Contrato com a infraestrutura, especificado no PRD de health/ready: ambas respondem exclusivamente `200` ou `503`, sem corpo informativo, sem autenticação e sem efeito colateral sobre dados ou estruturas. `/health` nunca depende do banco. `/ready` responde `503` quando o banco está indisponível ou quando o armazenamento de eventos não é legível pela aplicação, e responde em no máximo 3 segundos em qualquer estado da dependência. A resposta reflete exclusivamente a capacidade da instância consultada, sem depender do estado das demais. Os nomes `/health` e `/ready` são contrato entre a aplicação e a configuração de deploy: alterá-los exige alteração coordenada das probes.
 
 ### Modelo de dados
 
 Tabela `events` — única tabela do projeto, sem chaves estrangeiras ou relacionamentos:
 
-| Coluna          | Tipo     | Constraints/Default                                          |
-| --------------- | -------- | ------------------------------------------------------------ |
-| `id`          | Integer  | Chave primária, indexada                                    |
-| `title`       | String   | Indexada                                                     |
-| `description` | Text     | Nenhuma                                                      |
-| `date`        | DateTime | Default`datetime.datetime.utcnow`                          |
-| `location`    | String   | Nenhuma                                                      |
-| `edit_token`  | String   | Única, indexada, default gerado como UUID4 em formato texto |
+| Coluna | Tipo | Constraints/Default |
+| --- | --- | --- |
+| `id` | Integer | Chave primária, indexada |
+| `title` | String | Indexada |
+| `description` | Text | Nenhuma |
+| `date` | DateTime | Default `datetime.datetime.utcnow` |
+| `location` | String | Nenhuma |
+| `edit_token` | String | Única, indexada, default gerado como UUID4 em formato texto |
 
 O campo `technologies` existe nos schemas Pydantic como lista de texto e é anexado ao objeto retornado em memória após criação e atualização, mas não possui coluna correspondente e não é persistido.
 
 ## Requisitos Não-Funcionais
 
-| Dimensão           | Requisito                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Performance         | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Disponibilidade/SLA | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Escalabilidade      | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Segurança          | Não há requisito formal declarado. O que existe no código: nenhum endpoint exige autenticação; a alteração de um evento é autorizada exclusivamente pela posse do`edit_token`; a `SECRET_KEY` do Flask está fixa no código-fonte                                                                                                                                                                                                                                                                                                 |
-| Observabilidade     | Logs em stdout com formato fixo contendo data, nível, logger, função, linha e mensagem, com cores quando a saída é um terminal e o formato configurado é`colored`; métricas expostas via `prometheus-flask-exporter`, incluindo a métrica informativa `app_info` com a versão do serviço; middlewares que registram método, caminho, status e duração de cada requisição; funções dedicadas para registrar operações de banco e eventos de negócio; o nome do host do processo é injetado nas páginas renderizadas |
+| Dimensão | Requisito |
+| --- | --- |
+| Performance | Não há alvo de vazão ou latência declarado. Fixado um processo de trabalho por container, trocando vazão por réplica por previsibilidade de consumo e controle do número de conexões abertas contra o banco. Limite explícito: `/ready` responde em no máximo 3 segundos em qualquer estado da dependência |
+| Disponibilidade/SLA | Alvo: tolerar a perda de **uma** zona de disponibilidade sem indisponibilidade percebida, dentro de **uma única região**. Aplicação: três réplicas, uma por zona; `minAvailable: 2` durante manutenção; nós em três zonas, com mínimo 3, desejado 3 e teto 6, este último reservado à substituição de nós durante atualização. Banco: réplica síncrona de contingência em outra zona, com failover automático em 60–120 s, endereço de conexão único e RPO zero. Não há SLA formal contratado. Perda de região é perda de serviço e não é endereçada. Com nós de capacidade interruptível, a retirada de instância é evento normal, e interrupções simultâneas no mesmo conjunto de capacidade reduzem a capacidade abaixo do desenho até o reprovisionamento |
+| Escalabilidade | Três réplicas fixas, sem escalonamento automático — o número é declarado no manifesto, não é comportamento; alterá-lo exige nova publicação. O teto de escala futura é imposto pelo banco, não pelos nós: `max_connections ≈ 112` na classe escolhida, contra 15 conexões por processo (`pool_size=5` mais `max_overflow=10`), o que limita a aproximadamente 7 réplicas com um processo cada. Com três réplicas, o consumo é de 45 conexões — 40% do teto |
+| Segurança | Não há requisito formal declarado. Nenhum endpoint exige autenticação, inclusive `/health` e `/ready`; a alteração de um evento é autorizada exclusivamente pela posse do `edit_token`. A `SECRET_KEY` do Flask e a credencial do banco em `DATABASE_URL` são obrigatoriamente externas ao código-fonte e à imagem — condição bloqueante para execução em produção, dado que a imagem é publicada em repositório público e tudo o que está nela é extraível por qualquer pessoa. Conexão com o RDS cifrada em trânsito, com usuário de aplicação restrito e distinto do usuário administrativo da instância. Os corpos de `/health` e `/ready` não revelam nome de host, endereço, credencial, versão de dependência ou qualquer detalhe de topologia interna |
+| Observabilidade | Logs em stdout com formato fixo contendo data, nível, logger, função, linha e mensagem, com cores quando a saída é um terminal e o formato configurado é `colored`; métricas expostas via `prometheus-flask-exporter`, incluindo a métrica informativa `app_info`, cuja versão não pode divergir da identificação da imagem que a contém, por derivarem da mesma fonte no mesmo instante; middlewares que registram método, caminho, status e duração de cada requisição; funções dedicadas para registrar operações de banco e eventos de negócio; o nome do host do processo é injetado nas páginas renderizadas. Com um processo de trabalho por container, as métricas voltam a ser agregáveis por réplica; a agregação **entre** réplicas continua inexistente. A coleta de logs e os sinais de segurança do ambiente são responsabilidade de agentes executados em nível de nó, consumindo o stdout do container — requisito que determinou o modo de compute do cluster |
 
 ## Dependências Externas
 
-| Serviço / Sistema | Tipo                      | Constraint relevante                                                                                                                                                 | Dono          |
-| ------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| PostgreSQL         | Banco de dados relacional | Endereço e credenciais definidos por`DATABASE_URL`. A aplicação executa a criação das tabelas durante a inicialização, antes de a aplicação Flask existir | Não definido |
-| cdn.jsdelivr.net   | CDN de terceiros          | As páginas carregam Bootstrap 5.3.0 (CSS e JS) e Bootstrap Icons diretamente do CDN; não há cópia local desses recursos                                          | Não definido |
+| Serviço / Sistema | Tipo | Constraint relevante | Dono |
+| --- | --- | --- | --- |
+| PostgreSQL (Amazon RDS) | Banco de dados relacional gerenciado | Endereço e credenciais definidos por `DATABASE_URL`, externas à imagem. Classe `db.t4g.micro`, armazenamento gp3 de 20 GiB, réplica síncrona em outra zona com failover automático e endereço de conexão único; `max_connections ≈ 112`; backup automático e recuperação a ponto no tempo nativos do serviço. O tráfego entre zonas é cobrado: as réplicas estão em três zonas e a instância ativa em uma. A aplicação não prepara o schema. Em desenvolvimento é substituído por container PostgreSQL via Compose — assimetria conhecida em TLS, usuário e parâmetros de instância | Equipe de DevOps |
+| Amazon EKS | Plataforma de orquestração de containers | Cluster dedicado a este projeto, sem compartilhamento de plano de controle nem economia de escala com outras cargas. Grupo de nós gerenciado, capacidade interruptível, 2 vCPU e 2 GiB em família de uso geral com capacidade expansível (`t3.small` e equivalentes de outras famílias, declarados em conjunto para ampliar os conjuntos de capacidade disponíveis), arquitetura `linux/amd64`. Correções de sistema operacional dos nós e ciclo de vida das versões do cluster são responsabilidade da equipe. Consome `/health` e `/ready` como probes e o código de saída da preparação de schema como condição de rollout | Equipe de DevOps |
+| Docker Hub | Registro público de imagens | Publicação manual, arquitetura única, tag única sem tag móvel: publicar sem incrementar `SERVICE_VERSION` sobrescreve silenciosamente uma imagem já distribuída. Tudo o que está na imagem é publicamente extraível | Equipe de DevOps |
+| cdn.jsdelivr.net | CDN de terceiros | As páginas carregam Bootstrap 5.3.0 (CSS e JS) e Bootstrap Icons diretamente do CDN; não há cópia local desses recursos | Não definido |
 
 ## Padrões
 
 ### Testes
 
-| Item              | Valor                                                                                                                                                                                                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Framework         | pytest 8.3.4                                                                                                                                                                                                                                                          |
-| Comando completo  | Não definido — nenhum script, Makefile, pipeline ou documento do repositório define um comando de execução;`pytest.ini` declara apenas `pythonpath = .`                                                                                                      |
-| Cobertura mínima | Não definido — não há ferramenta nem configuração de cobertura no repositório                                                                                                                                                                                  |
-| Estratégia       | Testes unitários com a sessão de banco substituída por`MagicMock`, sem banco real. Um único arquivo, `src/tests/services/test_event_service.py`, com sete testes, cobrindo apenas a camada de serviço. Não há testes de rota, de schema ou de integração |
+| Item | Valor |
+| --- | --- |
+| Framework | pytest 8.3.4 |
+| Comando completo | Não definido — nenhum script, Makefile, pipeline ou documento do repositório define um comando de execução; `pytest.ini` declara apenas `pythonpath = .` |
+| Cobertura mínima | Não definido — não há ferramenta nem configuração de cobertura no repositório |
+| Estratégia | Testes unitários com a sessão de banco substituída por `MagicMock`, sem banco real. Um único arquivo, `src/tests/services/test_event_service.py`, com sete testes, cobrindo apenas a camada de serviço. Não há testes de rota, de schema ou de integração. O contexto de build restrito a `src/` mantém `pytest.ini` fora da imagem, o que impede executar a suíte dentro do container sem ajuste do contexto ou do arquivo de configuração |
 
 ### Estilo de código
 
@@ -131,11 +149,14 @@ Cada handler de rota envolve sua execução em `try/except`. A camada de serviç
 
 As duas superfícies tratam as mesmas condições de formas diferentes. Na API, `EventNotFoundError` resulta em `abort(404)`, `ValueError` em `abort(400)` com a mensagem de validação, e qualquer outra exceção em `abort(500)` com mensagem genérica. Nas páginas, `EventNotFoundError` renderiza o template `events/not_found.html` nas rotas de leitura, e nos formulários gera mensagem via `flash` seguida de redirecionamento; `ValueError` e exceções genéricas nos formulários também produzem `flash` e redirecionamento de volta ao formulário de origem. A falha na página de listagem renderiza um template `error.html` com status 500.
 
+A indisponibilidade do banco na inicialização não encerra o processo: a aplicação sobe, `/health` responde `200` e `/ready` responde `503` até a dependência voltar, sem necessidade de reiniciar a instância. Em contrapartida, a ausência de schema deixa de ser detectada na inicialização e passa a se manifestar na primeira consulta ao banco — mais tarde e mais perto do usuário —, sendo `/ready` o mecanismo que impede o tráfego de alcançar uma instância nessa condição. No failover do banco, o endereço de conexão permanece o mesmo e o endereço de rede muda; a verificação prévia do pool descarta as conexões mortas, sem o que a aplicação continuaria servindo erro depois de a dependência já ter se recuperado.
+
 ### Logging
 
 - **Formato:** texto de linha única com campos separados por barra vertical — `asctime | levelname | name | funcName:lineno | message` —, escrito em stdout. Quando `LOG_FORMAT` é `colored` e a saída é um terminal, o nível recebe cor ANSI. Eventos de negócio e operações de banco usam prefixos fixos, `BUSINESS |` e `DB |`, com pares chave-valor
 - **Nível padrão:** `INFO`; passa a `DEBUG` quando a variável `DEBUG` é verdadeira. Os loggers de `sqlalchemy.engine` e `urllib3` são fixados em `WARNING`
 - **Biblioteca:** módulo `logging` da biblioteca padrão, configurado em `core/logging.py`. A aplicação Flask reaproveita os handlers e o nível do logger principal
+- **Coleta:** stdout do container, consumido por agente executado em nível de nó no cluster. A aplicação não escreve arquivos de log nem conhece o destino final
 
 ### Autenticação / autorização
 
@@ -143,6 +164,7 @@ Não há autenticação. Nenhuma rota exige credencial, sessão ou identificaç�
 
 ## Decisões Globais (ADRs)
 
-| #  | Título                     | Data | Status | Link |
-| -- | --------------------------- | ---- | ------ | ---- |
-| — | *(nenhum ADR registrado)* | —   | —     | —   |
+| # | Título | Data | Status | Link |
+| --- | --- | --- | --- | --- |
+| 001 | Adotar containers Docker como unidade de empacotamento e execução | 2026-09-15 | aceito | [adrs/001](adrs/001-containerizacao-com-docker.md) |
+| 002 | Executar a aplicação em cluster EKS dedicado na AWS, com o banco de dados em serviço gerenciado | 2026-09-15 | aceito | [adrs/002](adrs/002-ambiente-de-producao-em-eks-na-aws.md) |

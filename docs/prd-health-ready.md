@@ -2,7 +2,7 @@
 
 **Status:** em revisão
 **Data:** 2026-08-17
-**Origem:** sessão de brainstorm sobre preparação da aplicação para operação em Kubernetes
+**Origem:** sessão de brainstorm sobre preparação da aplicação para operação em Kubernetes. Revisado em 2026-09-15 para incorporar o ADR 001, que retirou a preparação do schema de dentro do processo da aplicação
 
 ---
 
@@ -10,14 +10,14 @@
 
 **Produto.** Encontros Tech é uma aplicação web de cadastro e consulta de eventos, com interface de páginas e uma API. Depende de um banco de dados relacional para toda operação de negócio: sem ele, nenhuma funcionalidade útil existe.
 
-**Estado atual.** A aplicação não expõe nenhum sinal de ciclo de vida para um orquestrador. Além disso, a preparação do armazenamento de eventos acontece durante a inicialização do processo e é fatal: se o banco estiver indisponível naquele instante, o processo encerra antes de existir qualquer servidor HTTP.
+**Estado atual.** A aplicação não expõe nenhum sinal de ciclo de vida para um orquestrador. A preparação do armazenamento de eventos não acontece mais dentro do processo da aplicação: por decisão do ADR 001, é etapa separada e anterior, executada a partir da mesma imagem, da qual a aplicação depende para subir. A aplicação, portanto, nunca cria estruturas — apenas as encontra prontas ou não —, e a ausência do armazenamento deixa de ser detectada na inicialização para se manifestar na primeira consulta ao banco, mais tarde e mais perto do usuário.
 
 **Problema de negócio.** O destino da aplicação é operação em Kubernetes. Sem sinais de ciclo de vida, o orquestrador não consegue distinguir três situações que exigem respostas opostas:
 
 | Situação real | Resposta correta | O que acontece hoje |
 |---|---|---|
 | Processo travado/corrompido | Reiniciar a instância | Nada — instância travada continua recebendo tráfego |
-| Dependência externa indisponível | Parar de enviar tráfego, **não** reiniciar | Processo morre no início → reinícios em ciclo |
+| Dependência externa indisponível | Parar de enviar tráfego, **não** reiniciar | Nada distingue dependência fora de aplicação quebrada — o tráfego continua chegando |
 | Instância ainda inicializando | Aguardar antes de enviar tráfego | Tráfego chega antes da instância poder atender |
 
 A consequência de negócio é dupla: **indisponibilidade percebida pelo usuário** (requisições roteadas para instâncias incapazes de atender, resultando em erro) e **operação cega** (nenhum sinal automatizável distingue falha da aplicação de falha de dependência, o que atrasa diagnóstico e recuperação).
@@ -31,7 +31,8 @@ A consequência de negócio é dupla: **indisponibilidade percebida pelo usuári
 | Ator | Natureza | Papel nesta feature |
 |---|---|---|
 | **Orquestrador** (Kubernetes) | Sistema automatizado | Consulta os dois endpoints em intervalo regular. Reinicia a instância quando o sinal de vida falha; remove a instância do balanceamento quando o sinal de prontidão falha. Não lê nem interpreta corpo de resposta — atua apenas sobre o código de status. |
-| **Processo da aplicação** | Instância em execução | Responde aos dois sinais. Mantém, em memória, o conhecimento de se conseguiu preparar o armazenamento de eventos desde que iniciou. |
+| **Processo da aplicação** | Instância em execução | Responde aos dois sinais. Não prepara o armazenamento de eventos e não guarda memória de tentativa de preparo: cada consulta de prontidão avalia a condição corrente. |
+| **Rotina de preparação de schema** | Etapa anterior e independente | Cria as estruturas ausentes do armazenamento antes de a aplicação subir (ADR 001). Não participa das verificações e não é consultada por elas — seu resultado é observado pela aplicação apenas como o armazenamento estar ou não legível. |
 | **Banco de dados** | Dependência externa | Pode estar indisponível, disponível-mas-lento, ou disponível-sem-o-armazenamento-de-eventos-preparado. Cada estado precisa produzir um sinal de prontidão correto. |
 | **Pessoa operadora** | Humano | Consome os mesmos endpoints manualmente em diagnóstico. Não é público-alvo primário: o contrato é desenhado para o orquestrador. |
 | **Usuário final** | Humano | Não interage com os endpoints. É quem sofre a consequência de um sinal errado (erro ao acessar a aplicação). |
@@ -53,7 +54,7 @@ Quando o orquestrador consulta `/health`
 Então a resposta tem código de status `200`, indistinguível da resposta com o banco disponível.
 
 **P3 — Sinal de vida não depende do estado do armazenamento**
-Dado que o armazenamento de eventos nunca foi preparado com sucesso nesta instância
+Dado que o armazenamento de eventos não está preparado
 Quando o orquestrador consulta `/health`
 Então a resposta tem código de status `200`.
 
@@ -76,15 +77,15 @@ Então a resposta tem código de status `503`.
 *(Este predicado é a razão de o sinal de prontidão não se limitar a verificar conexão: uma instância conectada a um banco sem o armazenamento preparado falharia em toda requisição de negócio, e declarar-se pronta seria mentir.)*
 
 **P7 — Prontidão acompanha a recuperação da dependência**
-Dado que o armazenamento de eventos foi preparado com sucesso nesta instância e o banco tornou-se indisponível em seguida
+Dado que o armazenamento de eventos está preparado e o banco tornou-se indisponível em seguida
 Quando o banco volta a ficar disponível
 Então a próxima consulta a `/ready` responde `200`, sem necessidade de reiniciar a instância.
 
-**P8 — Falha de preparo persiste até reinício**
-Dado que a preparação do armazenamento de eventos falhou durante a inicialização desta instância
-Quando o banco volta a ficar disponível
-Então `/ready` continua respondendo `503` enquanto esta instância existir, e a recuperação depende de o orquestrador substituí-la.
-*(Consequência aceita: o custo é um reinício que o orquestrador executa automaticamente; o benefício é não haver mecanismo de auto-recuperação escondido dentro de uma verificação de saúde.)*
+**P8 — Prontidão acompanha a preparação do armazenamento, sem reinício**
+Dado que a etapa de preparação de schema não foi executada com sucesso e o armazenamento de eventos não existe
+Quando a etapa é executada com sucesso, com a aplicação já em execução
+Então a próxima consulta a `/ready` responde `200`, sem necessidade de reiniciar a instância.
+*(Consequência do ADR 001: como a aplicação não prepara o armazenamento, ela também não guarda o resultado de uma tentativa de preparo. A prontidão passa a ser função exclusiva da condição corrente da dependência, e não do histórico da instância — o que elimina a classe de instância permanentemente não-pronta que existiria se o preparo ocorresse dentro do processo.)*
 
 ### Inicialização
 
@@ -93,10 +94,11 @@ Dado que o banco de dados está indisponível
 Quando o processo da aplicação é iniciado
 Então o processo permanece em execução, `/health` responde `200` e `/ready` responde `503`.
 
-**P10 — Falha de preparo é registrada**
-Dado que a preparação do armazenamento de eventos falha durante a inicialização
-Quando o processo continua sua inicialização
-Então a falha e sua causa ficam registradas em log em nível de erro, permitindo diagnóstico posterior.
+**P10 — A causa da não-prontidão é registrada**
+Dado que uma consulta a `/ready` resulta em `503`
+Quando a resposta é produzida
+Então a condição que a causou — banco inalcançável ou armazenamento ausente — fica registrada em log em nível de erro, permitindo diagnóstico posterior.
+*(O registro precisa conviver com a cadência contínua de consulta, sem inundar o log: ver P16.)*
 
 ### Contrato de resposta
 
@@ -151,6 +153,7 @@ Então a resposta reflete exclusivamente a capacidade daquela instância, sem co
 6. **As verificações jamais tornam a aplicação menos capaz de atender tráfego real.** O custo de responder aos sinais não pode ser causa de degradação do atendimento de negócio.
 7. **O contrato é o código de status.** Nenhuma decisão do orquestrador depende de interpretar o corpo da resposta.
 8. **Os dois sinais são independentes.** O estado de um nunca é derivado do outro.
+9. **A prontidão não guarda estado.** A resposta de `/ready` reflete a condição corrente da dependência, nunca o histórico da instância. Duas instâncias iniciadas em momentos diferentes, sob a mesma condição de banco, respondem o mesmo.
 
 ---
 
@@ -162,7 +165,7 @@ Então a resposta reflete exclusivamente a capacidade daquela instância, sem co
 - **Sem colisão com o produto.** Os caminhos escolhidos não podem conflitar com rotas de página ou de API existentes nem restringir nomes de rota futuros de negócio.
 - **Cadência de consulta.** O comportamento precisa se sustentar sob consulta contínua e repetitiva por instância. *(Premissa — confirme ou corrija: uma consulta a cada 10 segundos por endpoint, por instância.)*
 - **Sem dependência de estado compartilhado.** Nenhuma instância pode precisar de coordenação com outras para responder aos sinais.
-- **Sem alteração de comportamento do produto.** Nenhuma funcionalidade de eventos muda de comportamento observável em consequência desta feature — exceto a inicialização, que deixa de ser fatal quando o banco está indisponível.
+- **Sem alteração de comportamento do produto.** Nenhuma funcionalidade de eventos muda de comportamento observável em consequência desta feature. A inicialização deixar de ser fatal com o banco indisponível é consequência do ADR 001, não desta entrega; esta entrega apenas torna a condição observável pelo orquestrador.
 
 ---
 
@@ -170,10 +173,10 @@ Então a resposta reflete exclusivamente a capacidade daquela instância, sem co
 
 | Item | Por quê |
 |---|---|
-| **Empacotamento e manifestos de deploy** (imagem de container, configuração das sondas no orquestrador) | Decidido explicitamente: esta entrega cobre apenas o comportamento da aplicação. Sem os manifestos os endpoints não são consumidos por ninguém — isso é reconhecido como fase seguinte, não como omissão. |
+| **Configuração das sondas nos manifestos de deploy** | Esta entrega cobre apenas o comportamento da aplicação. A imagem de container e o ambiente de execução já estão decididos nos ADRs 001 e 002; o que permanece fora é a configuração das sondas que consomem estes endpoints. Sem ela os endpoints não são consumidos por ninguém — fase seguinte, não omissão. |
 | **Retirar a instância do balanceamento durante encerramento** (prontidão responder não-pronta ao receber sinal de término) | É o que entrega deploy sem erros para o usuário durante atualização, mas foi adiado: a maior parte do efeito pode ser obtida na configuração de deploy, sem tocar na aplicação. Fica registrado como lacuna conhecida — **enquanto não existir, atualizações da aplicação continuam podendo produzir erro para usuários em trânsito.** |
-| **Auto-recuperação do preparo do armazenamento** (nova tentativa em segundo plano ou dentro da verificação) | Decisão consciente (ver P8): o orquestrador já substitui a instância; embutir recuperação numa verificação de saúde cria efeito colateral escondido e comportamento difícil de prever com várias instâncias. |
-| **Gestão de versionamento de schema (migrations)** | O preparo do armazenamento na inicialização é frágil com várias instâncias, mas substituí-lo é problema próprio, com risco e escopo próprios. |
+| **Preparar o armazenamento a partir da aplicação** (na inicialização, em segundo plano ou dentro da verificação) | A aplicação não prepara o armazenamento (ADR 001), e embutir preparo ou recuperação numa verificação de saúde criaria efeito colateral escondido, violando o invariante 4. Reexecutar a etapa de preparação é responsabilidade da orquestração. |
+| **Gestão de versionamento de schema (migrations)** | A etapa de preparação cria estruturas ausentes e não altera as existentes (ADR 001). A evolução de um schema já existente permanece descoberta, com risco e escopo próprios. |
 | **Sinal separado de "inicializando"** (startup) | A aplicação inicializa rapidamente e a distinção entre "iniciando" e "não pronto" não muda nenhuma decisão do orquestrador hoje. Reavaliar se o tempo de inicialização crescer. |
 | **Verificação de outras dependências** | O banco de dados é a única dependência externa da aplicação hoje. |
 | **Restringir os endpoints à rede interna** | Sem corpo informativo (P12), a exposição não carrega risco que justifique o custo. |
@@ -188,9 +191,9 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 **Comportamento**
 1. Com o banco disponível e o armazenamento preparado: `/health` responde `200` e `/ready` responde `200`.
 2. Com o banco parado: `/health` continua respondendo `200` e `/ready` responde `503`.
-3. Iniciando a aplicação com o banco parado: o processo permanece em execução (não encerra), `/health` responde `200`, `/ready` responde `503`, e o log contém um registro de erro descrevendo a falha de preparo.
+3. Iniciando a aplicação com o banco parado: o processo permanece em execução (não encerra), `/health` responde `200`, `/ready` responde `503`, e o log contém um registro de erro descrevendo a falha de acesso ao armazenamento.
 4. Reativando o banco após o cenário 2 (armazenamento já havia sido preparado): `/ready` volta a `200` na consulta seguinte, sem reiniciar a aplicação.
-5. Reativando o banco após o cenário 3 (preparo nunca concluído): `/ready` permanece `503`; após reiniciar a aplicação com o banco disponível, `/ready` responde `200`.
+5. Com o banco disponível e a etapa de preparação nunca executada: `/ready` responde `503`; após executar a etapa de preparação com sucesso, `/ready` responde `200` na consulta seguinte, **sem reiniciar a aplicação**.
 6. Com o banco disponível mas com o armazenamento de eventos ausente: `/ready` responde `503`.
 7. Com o banco inalcançável por descarte de pacotes: `/ready` responde `503` em até 3 segundos, medido de ponta a ponta.
 
