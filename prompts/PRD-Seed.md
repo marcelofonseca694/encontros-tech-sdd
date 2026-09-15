@@ -19,8 +19,13 @@ ITERAÇÃO: a cada resposta minha, incorpore os ajustes sem repetir o que já di
 
 FECHAMENTO: quando o entendimento estiver maduro, feche com um resumo — problema resolvido, decisões em tabela (Decisão | Escolha | Justificativa) e pontos em aberto. Aguarde eu validar; não avance sozinho.
 ```
-Sugestão de primeiro argumento: 
+
+## Ideia de Amadurecimento
+
+```
 Atualmente a aplicação inicia sem nenhum registro de evento. Existe um arquivo.http que é utilizado para fazer esse cadastro inicial. Mas eu quero criar um script de Seed para automatizar esse processo de população de criação de registros quando eu faço o start da aplicação. Dessa forma eu consigo fazer cadastros iniciais loclamente para desenvolvimento ou até colocar em uma pipeline CICD.
+```
+
 ---
 
 ## Prompt — Geração do PRD do seed (em cadeia, mesma sessão)

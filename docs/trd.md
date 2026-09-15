@@ -5,14 +5,14 @@
 
 ## Stack
 
-| Dimensão | Valor |
-|---|---|
-| Linguagem principal | Python 3.14.6 |
-| Runtime/plataforma | Processo Python único. Servidor embutido do Flask via `app.run` quando executado diretamente; Gunicorn declarado como dependência, sem comando de inicialização definido no repositório |
-| Framework principal | Flask 3.0.0, com Jinja2 3.1.6 para renderização de páginas |
-| Banco de dados | PostgreSQL, acessado via SQLAlchemy 2.0.43 e driver psycopg2-binary 2.9.10 |
-| Ferramentas de build | Não aplicável — não há etapa de build, empacotamento ou bundling no repositório |
-| Gerenciador de pacotes | pip, a partir de `src/requirements.txt` com 16 dependências de versão fixada. Não há lockfile nem `pyproject.toml` |
+| Dimensão              | Valor                                                                                                                                                                                         |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linguagem principal    | Python 3.14.6                                                                                                                                                                                 |
+| Runtime/plataforma     | Processo Python único. Servidor embutido do Flask via`app.run` quando executado diretamente; Gunicorn declarado como dependência, sem comando de inicialização definido no repositório |
+| Framework principal    | Flask 3.0.0, com Jinja2 3.1.6 para renderização de páginas                                                                                                                                 |
+| Banco de dados         | PostgreSQL, acessado via SQLAlchemy 2.0.43 e driver psycopg2-binary 2.9.10                                                                                                                    |
+| Ferramentas de build   | Não aplicável — não há etapa de build, empacotamento ou bundling no repositório                                                                                                         |
+| Gerenciador de pacotes | pip, a partir de`src/requirements.txt` com 16 dependências de versão fixada. Não há lockfile nem `pyproject.toml`                                                                     |
 
 ## Arquitetura
 
@@ -40,39 +40,39 @@ Na raiz: `pytest.ini`, `api-requests.http` e dois arquivos de exemplo de variáv
 
 ### Módulos / camadas principais
 
-| Módulo | Responsabilidade |
-|---|---|
-| `main` | Configura o logging, cria as tabelas no banco, instancia a aplicação Flask, registra métricas Prometheus, instala os middlewares de requisição e registra os blueprints |
-| `core.settings` | Carrega variáveis de ambiente e expõe uma instância única de configuração |
-| `core.database` | Cria o engine SQLAlchemy e fornece sessões de banco por meio de um gerenciador de contexto |
-| `core.logging` | Configura o logger da aplicação e oferece funções auxiliares para registrar requisições, operações de banco e eventos de negócio |
-| `models.event` | Declara a base SQLAlchemy e a entidade `Event` |
-| `schemas.event` | Define os modelos Pydantic de criação, atualização e saída de evento |
-| `services.event_service` | Concentra criação, consulta e atualização de eventos, além da exceção `EventNotFoundError` |
-| `routers.api_router` | Blueprint da API JSON, registrado sob `/api/events` |
-| `routers.page_router` | Blueprint das páginas HTML, registrado na raiz, incluindo o processamento dos formulários |
+| Módulo                    | Responsabilidade                                                                                                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `main`                   | Configura o logging, cria as tabelas no banco, instancia a aplicação Flask, registra métricas Prometheus, instala os middlewares de requisição e registra os blueprints |
+| `core.settings`          | Carrega variáveis de ambiente e expõe uma instância única de configuração                                                                                              |
+| `core.database`          | Cria o engine SQLAlchemy e fornece sessões de banco por meio de um gerenciador de contexto                                                                                  |
+| `core.logging`           | Configura o logger da aplicação e oferece funções auxiliares para registrar requisições, operações de banco e eventos de negócio                                    |
+| `models.event`           | Declara a base SQLAlchemy e a entidade`Event`                                                                                                                              |
+| `schemas.event`          | Define os modelos Pydantic de criação, atualização e saída de evento                                                                                                    |
+| `services.event_service` | Concentra criação, consulta e atualização de eventos, além da exceção`EventNotFoundError`                                                                           |
+| `routers.api_router`     | Blueprint da API JSON, registrado sob`/api/events`                                                                                                                         |
+| `routers.page_router`    | Blueprint das páginas HTML, registrado na raiz, incluindo o processamento dos formulários                                                                                  |
 
 ### Rotas
 
 API — blueprint `api`, registrado com prefixo `/api/events`:
 
-| Método | Rota | Handler |
-|---|---|---|
-| POST | `/api/events/` | `api_router.create_event` |
-| GET | `/api/events/` | `api_router.read_events` |
-| GET | `/api/events/by-token/<edit_token>` | `api_router.get_event_by_token` |
-| PUT | `/api/events/by-token/<edit_token>` | `api_router.update_event` |
+| Método | Rota                                  | Handler                           |
+| ------- | ------------------------------------- | --------------------------------- |
+| POST    | `/api/events/`                      | `api_router.create_event`       |
+| GET     | `/api/events/`                      | `api_router.read_events`        |
+| GET     | `/api/events/by-token/<edit_token>` | `api_router.get_event_by_token` |
+| PUT     | `/api/events/by-token/<edit_token>` | `api_router.update_event`       |
 
 Páginas — blueprint `pages`, registrado sem prefixo:
 
-| Método | Rota | Handler |
-|---|---|---|
-| GET | `/` | `page_router.list_events_page` |
-| GET | `/events/new` | `page_router.new_event_page` |
-| GET | `/events/<int:event_id>` | `page_router.event_detail_page` |
-| GET | `/events/edit/<edit_token>` | `page_router.edit_event_page` |
-| POST | `/events/` | `page_router.create_event_form` |
-| POST | `/events/edit/<edit_token>` | `page_router.update_event_form` |
+| Método | Rota                          | Handler                           |
+| ------- | ----------------------------- | --------------------------------- |
+| GET     | `/`                         | `page_router.list_events_page`  |
+| GET     | `/events/new`               | `page_router.new_event_page`    |
+| GET     | `/events/<int:event_id>`    | `page_router.event_detail_page` |
+| GET     | `/events/edit/<edit_token>` | `page_router.edit_event_page`   |
+| POST    | `/events/`                  | `page_router.create_event_form` |
+| POST    | `/events/edit/<edit_token>` | `page_router.update_event_form` |
 
 A listagem em `GET /` e em `GET /api/events/` aceita o parâmetro `search`, aplicado como busca parcial e sem distinção de maiúsculas sobre título, descrição e local. A rota da API aceita ainda `skip` e `limit`, com padrões 0 e 100.
 
@@ -80,44 +80,44 @@ A listagem em `GET /` e em `GET /api/events/` aceita o parâmetro `search`, apli
 
 Tabela `events` — única tabela do projeto, sem chaves estrangeiras ou relacionamentos:
 
-| Coluna | Tipo | Constraints/Default |
-|---|---|---|
-| `id` | Integer | Chave primária, indexada |
-| `title` | String | Indexada |
-| `description` | Text | Nenhuma |
-| `date` | DateTime | Default `datetime.datetime.utcnow` |
-| `location` | String | Nenhuma |
-| `edit_token` | String | Única, indexada, default gerado como UUID4 em formato texto |
+| Coluna          | Tipo     | Constraints/Default                                          |
+| --------------- | -------- | ------------------------------------------------------------ |
+| `id`          | Integer  | Chave primária, indexada                                    |
+| `title`       | String   | Indexada                                                     |
+| `description` | Text     | Nenhuma                                                      |
+| `date`        | DateTime | Default`datetime.datetime.utcnow`                          |
+| `location`    | String   | Nenhuma                                                      |
+| `edit_token`  | String   | Única, indexada, default gerado como UUID4 em formato texto |
 
 O campo `technologies` existe nos schemas Pydantic como lista de texto e é anexado ao objeto retornado em memória após criação e atualização, mas não possui coluna correspondente e não é persistido.
 
 ## Requisitos Não-Funcionais
 
-| Dimensão | Requisito |
-|---|---|
-| Performance | Não definido |
-| Disponibilidade/SLA | Não definido |
-| Escalabilidade | Não definido |
-| Segurança | Não há requisito formal declarado. O que existe no código: nenhum endpoint exige autenticação; a alteração de um evento é autorizada exclusivamente pela posse do `edit_token`; a `SECRET_KEY` do Flask está fixa no código-fonte |
-| Observabilidade | Logs em stdout com formato fixo contendo data, nível, logger, função, linha e mensagem, com cores quando a saída é um terminal e o formato configurado é `colored`; métricas expostas via `prometheus-flask-exporter`, incluindo a métrica informativa `app_info` com a versão do serviço; middlewares que registram método, caminho, status e duração de cada requisição; funções dedicadas para registrar operações de banco e eventos de negócio; o nome do host do processo é injetado nas páginas renderizadas |
+| Dimensão           | Requisito                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Performance         | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Disponibilidade/SLA | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Escalabilidade      | Não definido                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Segurança          | Não há requisito formal declarado. O que existe no código: nenhum endpoint exige autenticação; a alteração de um evento é autorizada exclusivamente pela posse do`edit_token`; a `SECRET_KEY` do Flask está fixa no código-fonte                                                                                                                                                                                                                                                                                                 |
+| Observabilidade     | Logs em stdout com formato fixo contendo data, nível, logger, função, linha e mensagem, com cores quando a saída é um terminal e o formato configurado é`colored`; métricas expostas via `prometheus-flask-exporter`, incluindo a métrica informativa `app_info` com a versão do serviço; middlewares que registram método, caminho, status e duração de cada requisição; funções dedicadas para registrar operações de banco e eventos de negócio; o nome do host do processo é injetado nas páginas renderizadas |
 
 ## Dependências Externas
 
-| Serviço / Sistema | Tipo | Constraint relevante | Dono |
-|---|---|---|---|
-| PostgreSQL | Banco de dados relacional | Endereço e credenciais definidos por `DATABASE_URL`. A aplicação executa a criação das tabelas durante a inicialização, antes de a aplicação Flask existir | Não definido |
-| cdn.jsdelivr.net | CDN de terceiros | As páginas carregam Bootstrap 5.3.0 (CSS e JS) e Bootstrap Icons diretamente do CDN; não há cópia local desses recursos | Não definido |
+| Serviço / Sistema | Tipo                      | Constraint relevante                                                                                                                                                 | Dono          |
+| ------------------ | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| PostgreSQL         | Banco de dados relacional | Endereço e credenciais definidos por`DATABASE_URL`. A aplicação executa a criação das tabelas durante a inicialização, antes de a aplicação Flask existir | Não definido |
+| cdn.jsdelivr.net   | CDN de terceiros          | As páginas carregam Bootstrap 5.3.0 (CSS e JS) e Bootstrap Icons diretamente do CDN; não há cópia local desses recursos                                          | Não definido |
 
 ## Padrões
 
 ### Testes
 
-| Item | Valor |
-|---|---|
-| Framework | pytest 8.3.4 |
-| Comando completo | Não definido — nenhum script, Makefile, pipeline ou documento do repositório define um comando de execução; `pytest.ini` declara apenas `pythonpath = .` |
-| Cobertura mínima | Não definido — não há ferramenta nem configuração de cobertura no repositório |
-| Estratégia | Testes unitários com a sessão de banco substituída por `MagicMock`, sem banco real. Um único arquivo, `src/tests/services/test_event_service.py`, com sete testes, cobrindo apenas a camada de serviço. Não há testes de rota, de schema ou de integração |
+| Item              | Valor                                                                                                                                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Framework         | pytest 8.3.4                                                                                                                                                                                                                                                          |
+| Comando completo  | Não definido — nenhum script, Makefile, pipeline ou documento do repositório define um comando de execução;`pytest.ini` declara apenas `pythonpath = .`                                                                                                      |
+| Cobertura mínima | Não definido — não há ferramenta nem configuração de cobertura no repositório                                                                                                                                                                                  |
+| Estratégia       | Testes unitários com a sessão de banco substituída por`MagicMock`, sem banco real. Um único arquivo, `src/tests/services/test_event_service.py`, com sete testes, cobrindo apenas a camada de serviço. Não há testes de rota, de schema ou de integração |
 
 ### Estilo de código
 
@@ -143,6 +143,6 @@ Não há autenticação. Nenhuma rota exige credencial, sessão ou identificaç�
 
 ## Decisões Globais (ADRs)
 
-| # | Título | Data | Status | Link |
-|---|---|---|---|---|
-| — | *(nenhum ADR registrado)* | — | — | — |
+| #  | Título                     | Data | Status | Link |
+| -- | --------------------------- | ---- | ------ | ---- |
+| — | *(nenhum ADR registrado)* | —   | —     | —   |
