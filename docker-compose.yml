@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: encontros_tech
+      POSTGRES_PASSWORD: encontros_tech
+      POSTGRES_DB: encontros_tech
+    ports:
+      - "5432:5432"
+    volumes:
+      - encontros_tech_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U encontros_tech -d encontros_tech"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  schema_prep:
+    build:
+      context: ./src
+      args:
+        SERVICE_VERSION: dev
+    command: ["python3", "schema_prep.py"]
+    environment:
+      DATABASE_URL: postgresql://encontros_tech:encontros_tech@db:5432/encontros_tech
+      SECRET_KEY: dev-secret-key
+      SERVICE_NAME: encontros-tech
+      LOG_LEVEL: INFO
+      LOG_FORMAT: colored
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build:
+      context: ./src
+      args:
+        SERVICE_VERSION: dev
+    environment:
+      DATABASE_URL: postgresql://encontros_tech:encontros_tech@db:5432/encontros_tech
+      SECRET_KEY: dev-secret-key
+      APP_TITLE: Encontros Tech
+      DEBUG: "false"
+      HOST: 0.0.0.0
+      PORT: 8000
+      SERVICE_NAME: encontros-tech
+      LOG_LEVEL: INFO
+      LOG_FORMAT: colored
+    ports:
+      - "8000:8000"
+    depends_on:
+      schema_prep:
+        condition: service_completed_successfully
+
+volumes:
+  encontros_tech_pgdata:

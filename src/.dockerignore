@@ -1,0 +1,69 @@
+# Arquivos de configuração local
+.env
+.env.local
+.env.production
+.env.example
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Diretórios de teste
+tests/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+
+# Ambientes virtuais
+venv/
+env/
+ENV/
+.venv/
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# Diretórios temporários
+tmp/
+temp/
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Arquivos de documentação
+README.md
+*.md
+docs/
+
+# Arquivos de configuração do projeto
+.editorconfig
+.flake8
+setup.py
+setup.cfg
+pyproject.toml
+
+# Backup files
+*.bak
+*.backup

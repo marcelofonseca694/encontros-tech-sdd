@@ -3,10 +3,8 @@ from flask import Flask, request, g
 from prometheus_flask_exporter import PrometheusMetrics
 import time
 
-from core.database import engine
 from core.settings import settings
 from core.logging import setup_logging, get_logger, log_request
-from models import event as event_model
 
 # Configurar sistema de logging
 use_colors = settings.LOG_FORMAT == "colored"
@@ -16,13 +14,9 @@ main_logger = setup_logging(
     use_colors=use_colors
 )
 
-# Cria as tabelas no banco de dados
-main_logger.info("Criando tabelas no banco de dados")
-event_model.Base.metadata.create_all(bind=engine)
-
 # Cria a aplicação Flask
 app = Flask(__name__, static_folder="static", template_folder="templates")
-app.config['SECRET_KEY'] = 'your-secret-key-here'  # TODO: Move to settings
+app.config['SECRET_KEY'] = settings.SECRET_KEY
 
 # Configurar logging para Flask
 app.logger.handlers = main_logger.handlers

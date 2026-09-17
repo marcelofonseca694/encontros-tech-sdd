@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://encontros_tech:encontros_tech@localhost:5432/encontros_tech")
     
     # Application
+    SECRET_KEY: str
     APP_TITLE: str = os.getenv("APP_TITLE", "Encontros Tech")
     DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
     HOST: str = os.getenv("HOST", "0.0.0.0")
