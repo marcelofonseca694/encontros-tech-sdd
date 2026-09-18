@@ -1,0 +1,36 @@
+# Configuração do cluster kind usado para validar o manifesto de k8s/.
+# Não é manifesto da aplicação — paralelo ao docker-compose.yml, que também
+# declara como obter um ambiente local (design.md, D12).
+#
+# Um nó de controle e três workers, cada um com uma zona de disponibilidade
+# fictícia distinta: sem elas, topologySpreadConstraints com maxSkew: 1 e
+# whenUnsatisfiable: DoNotSchedule deixaria duas das três réplicas
+# permanentemente Pending.
+#
+# Uso:
+#   kind create cluster --name encontros-tech-test --config kind-cluster.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-a"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-b"
+  - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "topology.kubernetes.io/zone=zone-c"

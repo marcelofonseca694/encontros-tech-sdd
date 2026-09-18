@@ -1,0 +1,410 @@
+# Manifesto de implantação da Encontros Tech.
+#
+# Arquivo único, multi-documento, aplicado por:
+#   kubectl apply -f k8s/encontros-tech.yaml
+#
+# Antes de aplicar fora de um cluster de teste local, é obrigatório substituir:
+#   - os valores de exemplo do Secret "encontros-tech-secrets" (ver aviso abaixo);
+#   - <SERVICE_VERSION> na tag da imagem do Deployment "encontros-tech-app" e do
+#     Job "schema-prep-<SERVICE_VERSION>" pela versão publicada em
+#     marferrs/encontros-tech-pos.
+#
+# Ordem dos documentos importa: `kubectl apply -f` aplica um arquivo na ordem em
+# que os documentos aparecem, sem reordenar por dependência. O Namespace é por
+# isso o primeiro documento, e todo recurso abaixo declara `namespace`
+# explicitamente.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: encontros-tech-config
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+data:
+  # SERVICE_VERSION não entra aqui: vem fixada na imagem (ADR 001), nunca do ambiente.
+  APP_TITLE: "Encontros Tech"
+  DEBUG: "false"
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  SERVICE_NAME: "encontros-tech"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "colored"
+---
+# ATENÇÃO: valores evidentemente de exemplo (D7 do design desta change).
+# Aplicar este arquivo sem substituí-los executa o ambiente com credenciais
+# conhecidas e publicadas neste repositório. Substitua POSTGRES_PASSWORD,
+# SECRET_KEY e a senha embutida em DATABASE_URL antes de qualquer uso que não
+# seja o cluster de teste local desta entrega.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: encontros-tech-secrets
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+type: Opaque
+stringData:
+  POSTGRES_USER: "encontros_tech"
+  POSTGRES_PASSWORD: "EXEMPLO-SUBSTITUA-ANTES-DE-USAR"
+  POSTGRES_DB: "encontros_tech"
+  SECRET_KEY: "EXEMPLO-SUBSTITUA-SECRET-KEY-ANTES-DE-USAR"
+  # Host é o nome do Service interno do banco (encontros-tech-db), declarado abaixo.
+  DATABASE_URL: "postgresql://encontros_tech:EXEMPLO-SUBSTITUA-ANTES-DE-USAR@encontros-tech-db:5432/encontros_tech"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encontros-tech-db
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/version: postgres-16-alpine
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  replicas: 1
+  strategy:
+    # Sem volume, dois pods coexistindo teriam dados diferentes e o Service
+    # distribuiria conexões entre bancos divergentes (D5). Recreate troca
+    # disponibilidade momentânea por consistência.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: encontros-tech
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: encontros-tech
+        app.kubernetes.io/instance: encontros-tech
+        app.kubernetes.io/version: postgres-16-alpine
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: encontros-tech
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      automountServiceAccountToken: false
+      # initContainer transitório, como root e só com CAP_CHOWN: o emptyDir
+      # nasce de propriedade do kubelet (root), e o initdb do container
+      # principal (uid 70, capabilities.drop: [ALL]) falha ao tentar chmod o
+      # diretório de dados sem ser dono dele. Corrige a posse uma vez, antes
+      # do container principal, que mantém o endurecimento de D9 intacto.
+      initContainers:
+        - name: fix-data-dir-ownership
+          image: postgres:16-alpine
+          command: ["chown", "70:70", "/var/lib/postgresql/data"]
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["CHOWN"]
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: encontros-tech-secrets
+          volumeMounts:
+            # Armazenamento efêmero (ADR 003): o dado existe apenas enquanto o
+            # pod existe. Sem PersistentVolumeClaim.
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 70
+            runAsGroup: 70
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            # Exceção documentada (D9): a imagem oficial do PostgreSQL escreve
+            # em vários caminhos próprios durante o initdb. Perseguir cada um
+            # com montagens aumentaria a fragilidade sem ganho proporcional.
+            readOnlyRootFilesystem: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: pgdata
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: encontros-tech-db
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/component: database
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Job é imutável: reaplicar o mesmo nome falha (D6). O nome carrega a
+  # versão, e a substituição é manual, coerente com a publicação manual de
+  # imagem estabelecida pelo ADR 001.
+  name: schema-prep-<SERVICE_VERSION>
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/version: "<SERVICE_VERSION>"
+    app.kubernetes.io/component: schema-prep
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  backoffLimit: 20
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: encontros-tech
+        app.kubernetes.io/instance: encontros-tech
+        app.kubernetes.io/version: "<SERVICE_VERSION>"
+        app.kubernetes.io/component: schema-prep
+        app.kubernetes.io/part-of: encontros-tech
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      containers:
+        - name: schema-prep
+          image: marferrs/encontros-tech-pos:<SERVICE_VERSION>
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "schema_prep.py"]
+          envFrom:
+            - configMapRef:
+                name: encontros-tech-config
+            - secretRef:
+                name: encontros-tech-secrets
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encontros-tech-app
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/version: "<SERVICE_VERSION>"
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxSurge: 0 é obrigatório (D8): com topologySpreadConstraints de
+      # maxSkew 1 e DoNotSchedule sobre três zonas com três réplicas, um pod
+      # excedente seria recusado pelo escalonador e o rollout travaria.
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: encontros-tech
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: encontros-tech
+        app.kubernetes.io/instance: encontros-tech
+        app.kubernetes.io/version: "<SERVICE_VERSION>"
+        app.kubernetes.io/component: app
+        app.kubernetes.io/part-of: encontros-tech
+        app.kubernetes.io/managed-by: kubectl
+    spec:
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: encontros-tech
+              app.kubernetes.io/component: app
+      containers:
+        - name: app
+          image: marferrs/encontros-tech-pos:<SERVICE_VERSION>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: encontros-tech-config
+            - secretRef:
+                name: encontros-tech-secrets
+          volumeMounts:
+            # readOnlyRootFilesystem quebraria o start por causa de main.py:26,
+            # que cria /tmp/prometheus_multiproc no import (D9).
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            # tcpSocket, não httpGet: GET / consulta o banco, e uma queda de
+            # banco faria a sonda de vida falhar nas três réplicas ao mesmo
+            # tempo, reiniciando todas por uma falha de dependência (D3).
+            tcpSocket:
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              # Sem limite de CPU (D10): estrangularia um servidor síncrono de
+              # processo único justamente sob rajada, num nó com uma réplica.
+              memory: 256Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# ATENÇÃO: /metrics (prometheus-flask-exporter) responde na mesma porta 8000,
+# sem autenticação. Este Service do tipo LoadBalancer publica /metrics na
+# internet junto com a aplicação, expondo rotas, contagens, latências e a
+# versão exata da imagem em execução. Risco aceito e documentado, não
+# mitigado nesta entrega (proposal.md, "Lacunas conhecidas").
+apiVersion: v1
+kind: Service
+metadata:
+  name: encontros-tech-app
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/component: app
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: encontros-tech-app
+  namespace: encontros-tech
+  labels:
+    app.kubernetes.io/name: encontros-tech
+    app.kubernetes.io/instance: encontros-tech
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: encontros-tech
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: encontros-tech
+      app.kubernetes.io/component: app
