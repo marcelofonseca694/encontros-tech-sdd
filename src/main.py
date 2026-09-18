@@ -31,14 +31,23 @@ metrics = PrometheusMetrics(app)
 # Configurar métricas customizadas
 metrics.info('app_info', 'Application info', version=settings.SERVICE_VERSION)
 
+# Rotas de sondas de saúde: excluídas do log de requisição (ver before_request/
+# after_request abaixo) para que o polling contínuo do orquestrador não
+# distorça a observabilidade de tráfego de negócio.
+HEALTH_PROBE_PATHS = {"/health", "/ready"}
+
 # Middleware para logging de requisições
 @app.before_request
 def before_request():
+    if request.path in HEALTH_PROBE_PATHS:
+        return
     g.start_time = time.time()
     main_logger.debug(f"Iniciando requisição: {request.method} {request.path}")
 
 @app.after_request
 def after_request(response):
+    if request.path in HEALTH_PROBE_PATHS:
+        return response
     if hasattr(g, 'start_time'):
         duration = time.time() - g.start_time
         log_request(main_logger, request.method, request.path, response.status_code)
@@ -46,9 +55,10 @@ def after_request(response):
     return response
 
 # Importar e registrar blueprints
-from routers import api_router, page_router
+from routers import api_router, page_router, health_router
 app.register_blueprint(api_router.bp, url_prefix='/api/events')
 app.register_blueprint(page_router.bp)
+app.register_blueprint(health_router.bp)
 
 main_logger.info(f"Aplicação Flask inicializada - Versão: {settings.SERVICE_VERSION}")
 main_logger.info(f"Debug mode: {settings.DEBUG} | Log level: {settings.LOG_LEVEL}")

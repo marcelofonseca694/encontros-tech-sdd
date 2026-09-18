@@ -2,7 +2,7 @@
 
 **Status:** em revisão
 **Data:** 2026-08-17
-**Origem:** sessão de brainstorm sobre preparação da aplicação para operação em Kubernetes. Revisado em 2026-09-15 para incorporar o ADR 001, que retirou a preparação do schema de dentro do processo da aplicação
+**Origem:** sessão de brainstorm sobre preparação da aplicação para operação em Kubernetes. Revisado em 2026-09-15 para incorporar o ADR 001, que retirou a preparação do schema de dentro do processo da aplicação. Revisado em 2026-09-18, em sessão de exploração que antecedeu a change `add-health-ready-endpoints`, para confirmar as premissas de corpo de resposta, tempo-limite e nível de log (ver "Premissas a confirmar")
 
 ---
 
@@ -97,8 +97,8 @@ Então o processo permanece em execução, `/health` responde `200` e `/ready` r
 **P10 — A causa da não-prontidão é registrada**
 Dado que uma consulta a `/ready` resulta em `503`
 Quando a resposta é produzida
-Então a condição que a causou — banco inalcançável ou armazenamento ausente — fica registrada em log em nível de erro, permitindo diagnóstico posterior.
-*(O registro precisa conviver com a cadência contínua de consulta, sem inundar o log: ver P16.)*
+Então a condição que a causou — banco inalcançável ou armazenamento ausente — fica registrada em log em nível de warning, permitindo diagnóstico posterior.
+*(Definido: warning, não erro — uma dependência fora do ar sob consulta contínua a cada 10s é condição operacional esperada, não falha da aplicação. O registro precisa conviver com a cadência contínua de consulta, sem inundar o log: ver P16.)*
 
 ### Contrato de resposta
 
@@ -111,12 +111,12 @@ Então o código de status é `200` (íntegro/pronto) ou `503` (não pronto), e 
 Dado qualquer consulta a `/health` ou `/ready`
 Quando a resposta é produzida
 Então o corpo não revela nome de host, endereço, credencial, versão de dependência, mensagem de erro do banco ou qualquer detalhe de topologia interna.
-*(Premissa — confirme ou corrija: o corpo será um texto curto e estável, do tipo `ok` / `not ready`, suficiente para diagnóstico humano e inútil para reconhecimento. Alternativa é corpo vazio.)*
+*(Definido: corpo em JSON — `{"status": "ok"}` para `/health` e para `/ready` pronto, `{"status": "not ready"}` para `/ready` não pronto — curto, estável, suficiente para diagnóstico humano e inútil para reconhecimento.)*
 
 **P13 — Resposta conclusiva dentro de limite**
 Dado que o banco de dados está inalcançável de forma que não recusa nem aceita conexão (pacotes descartados)
 Quando o orquestrador consulta `/ready`
-Então a resposta `503` é produzida em no máximo **3 segundos** *(premissa — confirme ou corrija: valor precisa ficar abaixo do tempo-limite que o orquestrador aplicará à consulta)*, e a consulta nunca fica pendente indefinidamente.
+Então a resposta `503` é produzida em no máximo **5 segundos** *(definido: o limite se aplica à fase de conexão com o banco — via `connect_timeout` — não à checagem inteira; é configurável pela variável de ambiente `READY_DB_TIMEOUT_SECONDS`, com este valor como padrão)*, e a consulta nunca fica pendente indefinidamente.
 
 **P14 — Endpoints acessíveis sem autenticação**
 Dado que o orquestrador não possui credenciais da aplicação
@@ -134,7 +134,7 @@ Então nenhum dado de negócio é criado, alterado ou removido, e nenhuma estrut
 Dado que os endpoints são consultados de forma contínua e repetitiva pelo orquestrador
 Quando métricas e logs da aplicação são analisados
 Então as consultas de saúde e prontidão não mascaram nem distorcem os indicadores de tráfego de negócio.
-*(Premissa — confirme ou corrija: interpretação adotada é que essas consultas ficam fora das métricas de requisição e fora do log de requisições em nível informativo. Este ponto ficou em aberto no brainstorm.)*
+*(Definido: exclusão total — essas consultas ficam fora das métricas de requisição e fora do log de requisições de negócio, sem exceção.)*
 
 **P17 — Instâncias avaliam a si mesmas**
 Dado que várias instâncias da aplicação executam simultaneamente
@@ -191,11 +191,11 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 **Comportamento**
 1. Com o banco disponível e o armazenamento preparado: `/health` responde `200` e `/ready` responde `200`.
 2. Com o banco parado: `/health` continua respondendo `200` e `/ready` responde `503`.
-3. Iniciando a aplicação com o banco parado: o processo permanece em execução (não encerra), `/health` responde `200`, `/ready` responde `503`, e o log contém um registro de erro descrevendo a falha de acesso ao armazenamento.
+3. Iniciando a aplicação com o banco parado: o processo permanece em execução (não encerra), `/health` responde `200`, `/ready` responde `503`, e o log contém um registro de warning descrevendo a falha de acesso ao armazenamento.
 4. Reativando o banco após o cenário 2 (armazenamento já havia sido preparado): `/ready` volta a `200` na consulta seguinte, sem reiniciar a aplicação.
 5. Com o banco disponível e a etapa de preparação nunca executada: `/ready` responde `503`; após executar a etapa de preparação com sucesso, `/ready` responde `200` na consulta seguinte, **sem reiniciar a aplicação**.
 6. Com o banco disponível mas com o armazenamento de eventos ausente: `/ready` responde `503`.
-7. Com o banco inalcançável por descarte de pacotes: `/ready` responde `503` em até 3 segundos, medido de ponta a ponta.
+7. Com o banco inalcançável por descarte de pacotes: `/ready` responde `503` em até 5 segundos (configurável via `READY_DB_TIMEOUT_SECONDS`), medido de ponta a ponta.
 
 **Contrato**
 8. Nenhuma resposta dos dois endpoints contém detalhe de infraestrutura, mensagem de erro do banco ou dado de configuração.
@@ -203,7 +203,7 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 10. Após qualquer volume de consultas aos dois endpoints, a contagem de eventos cadastrados e a estrutura do armazenamento permanecem inalteradas.
 
 **Observabilidade**
-11. Após um período de consultas repetidas aos endpoints, as métricas e os logs de requisição de negócio permanecem interpretáveis, sem serem dominados pelas consultas de verificação. *(sujeito à confirmação da premissa em P16)*
+11. Após um período de consultas repetidas aos endpoints, as métricas e os logs de requisição de negócio permanecem interpretáveis, sem serem dominados pelas consultas de verificação.
 
 **Verificação automatizada**
 12. Existe suíte de testes automatizados cobrindo, no mínimo: `/health` com dependência disponível e indisponível; `/ready` nos três estados (pronto, dependência fora, armazenamento ausente); e a inicialização não-fatal com dependência indisponível.
@@ -213,10 +213,10 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 
 ## Premissas a confirmar
 
-| # | Premissa | Onde aparece |
-|---|---|---|
-| 1 | Corpo da resposta é texto curto e estável (`ok` / `not ready`), não vazio | P12 |
-| 2 | Limite de 3 segundos para resposta conclusiva do sinal de prontidão | P13, aceite 7 |
-| 3 | Consultas de verificação ficam fora das métricas e do log de requisições | P16, aceite 11 |
-| 4 | Nomes `/health` e `/ready` (não `/healthz` e `/readyz`) | Restrições |
-| 5 | Cadência de uma consulta a cada 10 segundos por endpoint, por instância | Restrições |
+| # | Premissa | Onde aparece | Status |
+|---|---|---|---|
+| 1 | Corpo da resposta é JSON (`{"status": "ok"}` / `{"status": "not ready"}`) | P12 | Confirmada em 2026-09-18 |
+| 2 | Limite de 5 segundos, só na fase de conexão, configurável via `READY_DB_TIMEOUT_SECONDS` | P13, aceite 7 | Confirmada em 2026-09-18 |
+| 3 | Consultas de verificação ficam fora das métricas e do log de requisições, exclusão total | P16, aceite 11 | Confirmada em 2026-09-18 |
+| 4 | Nomes `/health` e `/ready` (não `/healthz` e `/readyz`) | Restrições | Em aberto |
+| 5 | Cadência de uma consulta a cada 10 segundos por endpoint, por instância | Restrições | Em aberto |

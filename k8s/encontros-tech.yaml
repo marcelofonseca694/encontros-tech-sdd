@@ -44,6 +44,7 @@ data:
   SERVICE_NAME: "encontros-tech"
   LOG_LEVEL: "INFO"
   LOG_FORMAT: "colored"
+  READY_DB_TIMEOUT_SECONDS: "5"
 ---
 # ATENÇÃO: valores evidentemente de exemplo (D7 do design desta change).
 # Aplicar este arquivo sem substituí-los executa o ambiente com credenciais
@@ -328,20 +329,24 @@ spec:
             - name: tmp
               mountPath: /tmp
           readinessProbe:
+            # /ready (não mais GET /): sinal dedicado, independente de
+            # renderizar página de negócio (D8 de add-health-ready-endpoints).
             httpGet:
-              path: /
+              path: /ready
               port: 8000
             periodSeconds: 10
-            timeoutSeconds: 3
+            timeoutSeconds: 6
             failureThreshold: 3
           livenessProbe:
-            # tcpSocket, não httpGet: GET / consulta o banco, e uma queda de
-            # banco faria a sonda de vida falhar nas três réplicas ao mesmo
-            # tempo, reiniciando todas por uma falha de dependência (D3).
-            tcpSocket:
+            # httpGet /health, não mais tcpSocket: seguro porque /health nunca
+            # consulta o banco, por contrato de aplicação (D8 de
+            # add-health-ready-endpoints) — preserva a garantia que tcpSocket
+            # dava antes por construção, sem o custo de uma sonda TCP pura.
+            httpGet:
+              path: /health
               port: 8000
             periodSeconds: 10
-            timeoutSeconds: 3
+            timeoutSeconds: 6
             failureThreshold: 3
           securityContext:
             runAsNonRoot: true

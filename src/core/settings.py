@@ -27,4 +27,7 @@ class Settings(BaseSettings):
     # Diretório para métricas Prometheus em ambiente multiprocessing (Gunicorn)
     PROMETHEUS_MULTIPROC_DIR: str = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/prometheus_multiproc")
 
+    # Teto de tempo (segundos) para a fase de conexão da checagem de prontidão (/ready)
+    READY_DB_TIMEOUT_SECONDS: int = int(os.getenv("READY_DB_TIMEOUT_SECONDS", "5"))
+
 settings = Settings()
