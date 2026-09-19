@@ -102,7 +102,7 @@ Então todos têm data posterior ao instante do acionamento.
 **P10 — Distribuição temporal preservada**
 Dado o conjunto de eventos semeados
 Quando suas datas são comparadas entre si
-Então mantêm a ordem cronológica e o espaçamento relativo do conjunto de referência, distribuídos ao longo de aproximadamente dois meses a partir do acionamento *(premissa — confirme ou corrija: primeiro evento poucos dias à frente, último cerca de dois meses depois)*.
+Então mantêm a ordem cronológica e o espaçamento relativo do conjunto de referência, deslocadas por uma constante de forma que o primeiro evento caia 3 dias após o acionamento e o último aproximadamente dois meses depois (58 dias, preservando o span original de 55 dias entre as dez datas de referência).
 
 **P11 — Conteúdo derivado do conjunto de referência**
 Dado o conjunto de eventos semeados
@@ -210,7 +210,7 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 6. Iniciar a aplicação sobre um catálogo vazio, por qualquer meio, não cria nenhum evento.
 
 **Conteúdo**
-7. Todos os eventos semeados têm data posterior ao instante do acionamento, e o intervalo entre o primeiro e o último é de aproximadamente dois meses.
+7. Todos os eventos semeados têm data posterior ao instante do acionamento; o primeiro cai 3 dias após o acionamento, e o intervalo até o último é de aproximadamente dois meses (58 dias).
 8. Título, descrição e local de cada evento semeado correspondem aos do evento equivalente em `api-requests.http`.
 9. Os dez eventos possuem tokens de edição distintos entre si; duas semeaduras em armazenamentos limpos produzem vinte tokens distintos.
 10. Cada evento semeado é acessível por listagem, busca, detalhe e edição por token exatamente como um evento cadastrado pela aplicação.
@@ -222,18 +222,18 @@ A feature está pronta quando **todos** os itens abaixo são verificáveis por o
 **Observabilidade**
 13. Após uma semeadura, os indicadores e registros de negócio não contabilizam as criações de demonstração como criação de evento.
 
-**Verificação automatizada** *(premissa — confirme ou corrija: nada foi definido sobre testes no brainstorm; o critério abaixo espelha o adotado em `prd-health-ready.md`)*
+**Verificação automatizada**
 14. Existe suíte de testes automatizados cobrindo, no mínimo: semeadura em catálogo vazio, semeadura bloqueada por catálogo com conteúdo, falha por armazenamento indisponível, e ausência de estado parcial após falha no meio da execução.
 15. A suíte roda junto com os testes existentes do projeto, em um único comando, sem depender de um armazenamento real em execução.
 
 ---
 
-## Premissas a confirmar
+## Premissas confirmadas
 
-| # | Premissa | Onde aparece |
-|---|---|---|
-| 1 | Distribuição das datas: primeiro evento poucos dias à frente, último cerca de dois meses depois | P10, aceite 7 |
-| 2 | Em pipeline, a espera pela aplicação precede o acionamento da semeadura; o sinal de prontidão de `prd-health-ready.md`, quando existir, passa a ser o critério dessa espera | Restrições |
-| 3 | A semeadura usa a mesma configuração de armazenamento da aplicação, sem configuração própria | Restrições |
-| 4 | O conjunto de eventos de demonstração é alterável como dado, sem exigir alteração da regra de semeadura | Restrições |
-| 5 | Cobertura por testes automatizados, nos mesmos moldes do PRD de saúde e prontidão | Aceite 14 e 15 |
+| # | Premissa | Onde aparece | Confirmação |
+|---|---|---|---|
+| 1 | Distribuição das datas: primeiro evento poucos dias à frente, último cerca de dois meses depois | P10, aceite 7 | Confirmado: primeiro evento 3 dias após o acionamento, deslocamento constante que preserva o span original de 55 dias entre as dez datas de referência (último evento a 58 dias) |
+| 2 | Em pipeline, a espera pela aplicação precede o acionamento da semeadura; o sinal de prontidão de `prd-health-ready.md`, quando existir, passa a ser o critério dessa espera | Restrições | Confirmado: `/health` e `/ready` já existem (`add-health-ready-endpoints`) |
+| 3 | A semeadura usa a mesma configuração de armazenamento da aplicação, sem configuração própria | Restrições | Confirmado: `seed.py` reutiliza `core.settings`/`core.database` sem configuração própria |
+| 4 | O conjunto de eventos de demonstração é alterável como dado, sem exigir alteração da regra de semeadura | Restrições | Confirmado: conjunto de referência isolado em `seed_data.py`, separado da lógica de `seed.py` |
+| 5 | Cobertura por testes automatizados, nos mesmos moldes do PRD de saúde e prontidão | Aceite 14 e 15 | Confirmado: `src/tests/test_seed.py`, sessão mockada, sem banco real |
